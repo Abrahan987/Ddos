@@ -23,6 +23,7 @@ class HTTPStorm:
     def __init__(self, config):
         self.url = config['url']
         self.duration = config['duration']
+        self.requests = config.get('requests', 0)
         self.threads = config['threads']
         self.rps = config['rps']
         self.method = config['method']
@@ -179,8 +180,11 @@ class HTTPStorm:
         
         requests_made = 0
         delay = 1.0 / (self.rps / self.threads) if self.rps > 0 else 0
-        
+
         while self.running:
+            if self.requests > 0 and self.stats['total_requests'] >= self.requests:
+                break
+
             if self.rps > 0:
                 time.sleep(delay)
             
@@ -239,8 +243,11 @@ class HTTPStorm:
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             tasks = []
-            
+
             while self.running:
+                if self.requests > 0 and self.stats['total_requests'] >= self.requests:
+                    break
+
                 if len(tasks) < self.threads * 20:  # Maintain task buffer
                     task = asyncio.create_task(self.async_worker(session, semaphore))
                     tasks.append(task)
@@ -330,32 +337,49 @@ class HTTPStorm:
         stats_thread.start()
         
         try:
-            if use_async:
-                # Async mode
-                def stop_storm():
+            if self.requests > 0:
+                # Request-limited mode
+                if use_async:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self.async_storm())
+                else:
+                    threads = []
+                    for i in range(self.threads):
+                        t = threading.Thread(target=self.worker_thread, args=(i,))
+                        t.daemon = True
+                        threads.append(t)
+                        t.start()
+
+                    for t in threads:
+                        t.join()
+                self.running = False
+            else:
+                # Duration-limited mode
+                if use_async:
+                    def stop_storm():
+                        time.sleep(self.duration)
+                        self.running = False
+
+                    stop_thread = threading.Thread(target=stop_storm)
+                    stop_thread.start()
+
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self.async_storm())
+                else:
+                    threads = []
+                    for i in range(self.threads):
+                        t = threading.Thread(target=self.worker_thread, args=(i,))
+                        t.daemon = True
+                        threads.append(t)
+                        t.start()
+
                     time.sleep(self.duration)
                     self.running = False
-                
-                stop_thread = threading.Thread(target=stop_storm)
-                stop_thread.start()
-                
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self.async_storm())
-            else:
-                # Multi-thread mode
-                threads = []
-                for i in range(self.threads):
-                    t = threading.Thread(target=self.worker_thread, args=(i,))
-                    t.daemon = True
-                    threads.append(t)
-                    t.start()
-                
-                time.sleep(self.duration)
-                self.running = False
-                
-                for t in threads:
-                    t.join(timeout=5)
+
+                    for t in threads:
+                        t.join(timeout=5)
                     
         except KeyboardInterrupt:
             print("\n🛑 Storm interrupted by user")
@@ -413,11 +437,12 @@ def main():
     parser = argparse.ArgumentParser(description='⚡ HTTP Storm - Advanced Load Tester')
     parser.add_argument('url', help='Target URL')
     parser.add_argument('-d', '--duration', type=int, default=10, help='Duration in seconds (default: 10)')
+    parser.add_argument('-n', '--requests', type=int, default=0, help='Number of requests to make (0 = unlimited, overrides duration)')
     parser.add_argument('-t', '--threads', type=int, default=50, help='Number of threads (default: 50)')
     parser.add_argument('-r', '--rps', type=int, default=0, help='Requests per second (0 = unlimited)')
     parser.add_argument('-m', '--method', default='GET', choices=['GET', 'POST'], help='HTTP method')
     parser.add_argument('--timeout', type=float, default=10, help='Request timeout (default: 10s)')
-    parser.add_argument('--async', action='store_true', help='Use async mode (higher performance)')
+    parser.add_argument('--use-async', action='store_true', help='Use async mode (higher performance)')
     parser.add_argument('--stealth', action='store_true', help='Enable stealth mode (random headers/IPs)')
     parser.add_argument('--random-delay', action='store_true', help='Add random delays between requests')
     parser.add_argument('--config', help='Load configuration from JSON file')
@@ -443,6 +468,7 @@ def main():
     config = {
         'url': args.url,
         'duration': args.duration,
+        'requests': args.requests,
         'threads': args.threads,
         'rps': args.rps,
         'method': args.method,
@@ -465,7 +491,7 @@ def main():
     
     # Create and start storm
     storm = HTTPStorm(config)
-    storm.start_storm(use_async=args.async)
+    storm.start_storm(use_async=args.use_async)
 
 if __name__ == "__main__":
     main()
