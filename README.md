@@ -33,6 +33,9 @@ Advanced Storm:
 # 500 threads, 60 seconds, unlimited RPS
 python storm.py https://your-server.com -t 500 -d 60 -r 0
 
+# 10,000 requests as fast as possible
+python storm.py https://your-server.com -n 10000 -t 200
+
 # Async mode with config file
 python storm.py https://your-server.com --async --config config/storm_config.json
 
